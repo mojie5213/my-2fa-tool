@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>老弟2FA 动态验证码生成器</title>
+    <!-- 引入稳定的加密计算库 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jsSHA/3.3.1/sha1.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f7fa; color: #333; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 20px; }
+        .card { background: #fff; width: 100%; max-width: 440px; padding: 30px; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.08); text-align: center; }
+        h2 { margin-bottom: 20px; color: #1a1a1a; font-size: 20px; }
+        .input-group { margin-bottom: 15px; }
+        input[type="text"] { width: 100%; padding: 12px 15px; font-size: 16px; border: 2px solid #e1e8ed; border-radius: 8px; outline: none; transition: border 0.2s; text-align: center; letter-spacing: 1px; }
+        input[type="text"]:focus { border-color: #0066ff; }
+        .btn { width: 100%; padding: 12px; background: #0066ff; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; margin-bottom: 20px; transition: background 0.2s; }
+        .btn:hover { background: #0052cc; }
+        .code-box { background: #f0f4f8; border-radius: 8px; padding: 20px; margin-bottom: 15px; position: relative; cursor: pointer; display: none; }
+        .code-box.show { display: block; }
+        .code-display { font-size: 38px; font-weight: bold; font-family: monospace; letter-spacing: 6px; color: #0066ff; }
+        .copy-hint { font-size: 12px; color: #888; margin-top: 5px; }
+        .progress-bar-container { width: 100%; height: 6px; background: #e1e8ed; border-radius: 3px; overflow: hidden; margin-top: 15px; }
+        .progress-bar { height: 100%; background: #0066ff; width: 100%; transition: width 1s linear, background-color 0.3s; }
+        .toast { font-size: 14px; color: #4caf50; height: 20px; opacity: 0; transition: opacity 0.3s; }
+        .toast.show { opacity: 1; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h2>2FA 验证码生成器</h2>
+    <div class="input-group">
+        <input type="text" id="secretInput" placeholder="请输入 2FA 密钥 (Secret Key)" autocomplete="off">
+    </div>
+    <button class="btn" id="generateBtn">生成验证码</button>
+
+    <div class="code-box" id="codeBox" onclick="copyCode()">
+        <div class="code-display" id="codeDisplay">------</div>
+        <div class="copy-hint">点击任意区域复制验证码</div>
+        <div class="progress-bar-container">
+            <div class="progress-bar" id="progressBar"></div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast">已成功复制到剪贴板！</div>
+</div>
+
+<script>
+    function base32ToHex(base32) {
+        const base32chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+        let bits = '';
+        let hex = '';
+        base32 = base32.replace(/=+$/, '').toUpperCase();
+        for (let i = 0; i < base32.length; i++) {
+            const val = base32chars.indexOf(base32[i]);
+            if (val === -1) throw new Error('Invalid base32 character');
+            bits += val.toString(2).padStart(5, '0');
+        }
+        for (let i = 0; i + 4 <= bits.length; i += 4) {
+            const chunk = bits.substr(i, 4);
+            hex += parseInt(chunk, 2).toString(16);
+        }
+        return hex;
+    }
+
+    function generateTOTP(secret) {
+        try {
+            const cleanSecret = secret.replace(/\s+/g, '').toUpperCase();
+            if (!cleanSecret) return null;
+
+            const epoch = Math.floor(Date.now() / 1000);
+            const time = Math.floor(epoch / 30);
+            let timeHex = time.toString(16).padStart(16, '0');
+            
+            const keyHex = base32ToHex(cleanSecret);
+            
+            const shaObj = new jsSHA("SHA-1", "HEX");
+            shaObj.setHMACKey(keyHex, "HEX");
+            shaObj.update(timeHex);
+            const hmacHex = shaObj.getHMAC("HEX");
+            
+            const offset = parseInt(hmacHex.slice(-1), 16);
+            const binary = ((parseInt(hmacHex.slice(offset * 2, offset * 2 + 8), 16)) & 0x7fffffff);
+            const otp = (binary % 1000000).toString().padStart(6, '0');
+            return otp;
+        } catch (e) {
+            return "error";
+        }
+    }
+
+    const secretInput = document.getElementById('secretInput');
+    const generateBtn = document.getElementById('generateBtn');
+    const codeBox = document.getElementById('codeBox');
+    const codeDisplay = document.getElementById('codeDisplay');
+    const progressBar = document.getElementById('progressBar');
+    const toast = document.getElementById('toast');
+
+    let timerInterval = null;
+
+    function updateCode() {
+        const secret = secretInput.value;
+        if (!secret.trim()) {
+            alert("请先输入 2FA 密钥");
+            return;
+        }
+
+        const token = generateTOTP(secret);
+        if (token === "error") {
+            alert("密钥格式错误，请检查输入的 Base32 密钥");
+            return;
+        }
+
+        codeDisplay.innerText = token;
+        codeBox.classList.add('show');
+
+        // 计算 30 秒倒计时进度条
+        const seconds = new Date().getSeconds();
+        const remaining = 30 - (seconds % 30);
+        const percentage = (remaining / 30) * 100;
+        
+        progressBar.style.width = percentage + "%";
+        progressBar.style.backgroundColor = remaining <= 5 ? "#f44336" : "#0066ff";
+    }
+
+    generateBtn.addEventListener('click', () => {
+        updateCode();
+        if (timerInterval) clearInterval(timerInterval);
+        
+        // 点击生成后，让它在当前周期内自动刷新倒计时
+        timerInterval = setInterval(() => {
+            if (codeBox.classList.contains('show')) {
+                const secret = secretInput.value;
+                const token = generateTOTP(secret);
+                if (token && token !== "error") {
+                    codeDisplay.innerText = token;
+                }
+                const seconds = new Date().getSeconds();
+                const remaining = 30 - (seconds % 30);
+                progressBar.style.width = (remaining / 30) * 100 + "%";
+                progressBar.style.backgroundColor = remaining <= 5 ? "#f44336" : "#0066ff";
+            }
+        }, 1000);
+    });
+
+    function copyCode() {
+        const code = codeDisplay.innerText;
+        if (code && code !== "------") {
+            navigator.clipboard.writeText(code).then(() => {
+                toast.classList.add('show');
+                setTimeout(() => toast.classList.remove('show'), 2000);
+            });
+        }
+    }
+</script>
+
+</body>
+</html>
